@@ -1,0 +1,6 @@
+# macOS
+.DS_Store
+**/.DS_Store
+
+# drafts / posts not meant to be published
+blog/_unused/

@@ -1,0 +1,166 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Kafka Is Fast for Surprisingly Ordinary Reasons — Mohsen Salari</title>
+<meta name="description" content="The two design choices behind Kafka's throughput: Sequential I/O (the append-only log) and the Zero-Copy principle (sendfile + DMA)." />
+<meta name="author" content="Mohsen Salari" />
+<meta name="theme-color" content="#0a0a0b" />
+<link rel="canonical" href="https://mohsensalare.ir/blog/why-kafka-is-fast.html" />
+
+<meta property="og:type" content="article" />
+<meta property="og:site_name" content="Mohsen Salari" />
+<meta property="og:url" content="https://mohsensalare.ir/blog/why-kafka-is-fast.html" />
+<meta property="og:title" content="Kafka Is Fast for Surprisingly Ordinary Reasons" />
+<meta property="og:description" content="Sequential I/O and Zero-Copy — the two cornerstones of Kafka's performance, explained with diagrams." />
+<meta property="og:image" content="https://mohsensalare.ir/assets/img/blog/kafka-combined.jpg" />
+<meta property="article:published_time" content="2026-06-19" />
+<meta property="article:author" content="Mohsen Salari" />
+
+<meta name="twitter:card" content="summary_large_image" />
+<meta name="twitter:title" content="Kafka Is Fast for Surprisingly Ordinary Reasons" />
+<meta name="twitter:description" content="Sequential I/O and Zero-Copy — the two cornerstones of Kafka's performance, explained with diagrams." />
+<meta name="twitter:image" content="https://mohsensalare.ir/assets/img/blog/kafka-combined.jpg" />
+
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@300;400;500&amp;family=Manrope:wght@400;500;600;700&amp;display=swap" rel="stylesheet" />
+
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='20' fill='%230a0a0b'/><text x='50' y='70' font-size='60' font-family='Helvetica,Arial' font-weight='500' fill='%23ededee' text-anchor='middle'>M</text></svg>" />
+<link rel="stylesheet" href="../assets/css/style.css" />
+
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "BlogPosting",
+  "headline": "Kafka is fast for surprisingly ordinary reasons",
+  "description": "Sequential I/O and Zero-Copy — the two cornerstones of Kafka's performance, explained with diagrams.",
+  "image": "https://mohsensalare.ir/assets/img/blog/kafka-combined.jpg",
+  "datePublished": "2026-06-19",
+  "dateModified": "2026-06-19",
+  "author": { "@type": "Person", "name": "Mohsen Salari", "url": "https://mohsensalare.ir/" },
+  "publisher": { "@type": "Person", "name": "Mohsen Salari" },
+  "mainEntityOfPage": "https://mohsensalare.ir/blog/why-kafka-is-fast.html",
+  "keywords": "Apache Kafka, system design, streaming, performance, zero-copy, sequential I/O"
+}
+</script>
+</head>
+<body>
+
+<header class="nav">
+  <div class="wrap nav-inner">
+    <a href="../index.html" class="brand"><span class="sig">MS</span> Mohsen Salari</a>
+    <nav class="nav-links" id="navlinks">
+      <a href="../index.html#work">Work</a>
+      <a href="../index.html#projects">Projects</a>
+      <a href="index.html">Writing</a>
+      <a href="../index.html#about">About</a>
+      <a href="../index.html#contact">Contact</a>
+    </nav>
+    <div class="nav-actions">
+      <button class="theme-toggle" id="themeBtn" aria-label="Toggle theme">☾</button>
+      <button class="nav-toggle" id="navToggle" aria-label="Open menu" aria-expanded="false">Menu</button>
+    </div>
+  </div>
+</header>
+
+<article class="post">
+  <a class="back" href="index.html">← All posts</a>
+
+  <header class="post-head">
+    <div class="meta"><span>2026-06-19</span><span>·</span><span>8 min read</span><span>·</span><span>system design</span></div>
+    <h1>Kafka is fast for surprisingly ordinary reasons</h1>
+    <p class="sub">Sequential I/O, the page cache, and zero-copy explain most of the story. None is exotic; Kafka is simply designed around what disks and operating systems already do well.</p>
+  </header>
+
+  <div class="post-body">
+    <p>Kafka often appears in architecture diagrams as the component that can absorb enormous event streams. That reputation is deserved, but the explanation is less mysterious than the diagrams make it look.</p>
+
+    <p>The two ideas that matter most are <strong>sequential I/O</strong> and <strong>zero-copy</strong>. Both come from the same instinct: work with the hardware and operating system instead of adding another abstraction in the middle.</p>
+
+    <h2>First, redefine "fast": throughput vs latency</h2>
+    <p>"Fast" is ambiguous in system design. Do we mean low <strong>latency</strong> (how long a single message takes from producer to consumer) or high <strong>throughput</strong> (how much data moves over a window of time)? Kafka is unapologetically optimized for <strong>throughput</strong>.</p>
+    <p>Think of Kafka as a pipeline moving liquid. The goal isn't to make one drop travel faster — it's to widen the pipe so an enormous, continuous volume flows through. When people say "Kafka is fast," they mean it can move and store massive amounts of data in very little time. Two foundational choices make that possible.</p>
+
+    <hr />
+
+    <h2>First: write sequentially</h2>
+    <p>There's a long-standing myth in software: "disk is always slow, memory is always fast." For <em>random</em> access that's broadly true. But it falls apart the moment you look at the access <em>pattern</em>.</p>
+    <p>On a spinning disk (HDD), random reads and writes force the physical head to jump around to different locations. That mechanical seek time is what makes random access sluggish. <strong>Sequential</strong> access is a completely different story: if the head can just read or write blocks one after another in a straight line, it flies.</p>
+    <p>Kafka exploits this by using an <strong>append-only log</strong> as its core data structure. When a producer sends a message, Kafka doesn't update an existing record or insert randomly — it just appends to the end of a file. A purely sequential operation.</p>
+
+    <figure>
+      <img src="../assets/img/blog/kafka-seq-vs-random.jpg" alt="Random access (head jumping, slow) versus sequential append-only access (one track, fast)" />
+      <figcaption>Random access makes the disk head jump (high seek time). Kafka's append-only log keeps it moving along one track — near-zero seek time.</figcaption>
+    </figure>
+
+    <h3>The numbers speak for themselves</h3>
+    <p>On modern hardware with a JBOD (Just a Bunch Of Disks) array, <strong>sequential writes can hit hundreds of megabytes per second</strong>, while random writes max out at mere hundreds of <em>kilobytes</em> per second. That's several orders of magnitude.</p>
+    <p>There's a cost angle too. Because sequential I/O unlocks high speeds even on plain HDDs, Kafka doesn't <em>need</em> expensive SSDs. HDDs cost roughly a third of the price of SSDs while offering about three times the capacity — so Kafka can retain huge volumes of messages for long periods, cheaply. That kind of cheap, durable retention was rare in enterprise messaging before Kafka.</p>
+
+    <h3>It also leans on the OS page cache</h3>
+    <p>Kafka deliberately keeps data in the operating system's <strong>page cache</strong> rather than managing a big in-process cache on the JVM heap. Reads and writes go through memory the OS already manages, sequentially, so "hot" data is served straight from RAM without Kafka copying it around itself — and without the garbage-collection pressure a giant heap cache would create.</p>
+
+    <figure>
+      <img src="../assets/img/blog/kafka-pagecache.jpg" alt="Traditional random RAM access versus Kafka's linear page-cache access" />
+      <figcaption>Standard apps hit memory randomly (high latency, GC-heavy). Kafka streams linearly through the OS page cache — efficient, and it sets up the zero-copy path below.</figcaption>
+    </figure>
+
+    <hr />
+
+    <h2>Then: avoid copying data you do not need to touch</h2>
+    <p>Kafka's whole job is moving data: network → disk when producers publish, and disk → network when consumers read. When you're moving terabytes, even tiny per-operation inefficiencies stack up. The usual culprit is <strong>unnecessary copying</strong> of data between the disk, system memory, and the network.</p>
+
+    <h3>The inefficient way (without zero-copy)</h3>
+    <p>Here's what a standard application does to send a file from disk over the network:</p>
+    <ol>
+      <li>Load data from disk into the <strong>OS kernel cache</strong>.</li>
+      <li>Copy it up from the kernel cache into the <strong>application buffer</strong> (user space).</li>
+      <li>Copy it back down into the kernel's <strong>socket buffer</strong>.</li>
+      <li>Copy it from the socket buffer into the <strong>NIC buffer</strong> to actually send.</li>
+    </ol>
+    <p>That's <strong>four copies</strong> and <strong>two context switches</strong> between user and kernel space — pure CPU overhead, and a disaster at streaming scale.</p>
+
+    <h3>The Kafka way (with zero-copy)</h3>
+    <p>Kafka skips the application layer entirely when serving data to consumers. It uses a system call like <code>sendfile()</code> on Linux:</p>
+    <ol>
+      <li>Data is loaded from disk into the <strong>OS cache</strong> (same as before).</li>
+      <li>Kafka issues <code>sendfile</code>, and the OS transfers the data directly from the OS cache to the <strong>NIC buffer</strong>.</li>
+    </ol>
+    <p>The data <strong>never enters Kafka's user-space process</strong>. And because modern network cards use <strong>DMA (Direct Memory Access)</strong> for that transfer, the main CPU isn't even involved in the copy. Kafka just points at the data; the OS and the NIC do the heavy lifting.</p>
+
+    <figure>
+      <img src="../assets/img/blog/kafka-zero-copy.jpg" alt="Traditional path with four data copies versus Kafka's single zero-copy sendfile path" />
+      <figcaption>Top: the traditional path — five copies through CPU, app, and socket buffers. Bottom: Kafka's zero-copy path — a single DMA-driven <code>sendfile</code> straight from the page cache to the network.</figcaption>
+    </figure>
+
+    <hr />
+
+    <h2>Putting it together</h2>
+    <p>Kafka uses plenty of other tricks — aggressive message batching, smart partition distribution, compression — but Sequential I/O and Zero-Copy are the cornerstones. Writes go to an append-only log on disk in one linear sweep; reads stream straight from the page cache to the network card without ever touching the application.</p>
+
+    <figure>
+      <img src="../assets/img/blog/kafka-combined.jpg" alt="End-to-end Kafka data path: sequential append-only writes and zero-copy reads working together" />
+      <figcaption>The two pathways end to end — sequential append-only writes (left) feeding zero-copy, DMA-driven reads (right).</figcaption>
+    </figure>
+
+    <p>Kafka treats the disk as an append-only log and lets the operating system move bytes to the network with very little interference. The result is not magic; it is a deliberately narrow design that matches a high-throughput streaming workload unusually well.</p>
+
+    <div class="post-source">
+      Notes written up from the excellent <a href="https://www.youtube.com/@ByteByteGo" target="_blank" rel="noopener">ByteByteGo</a> system-design series on Kafka internals. Diagrams are my own.
+    </div>
+
+    <div class="post-tags"><span>system design</span><span>kafka</span><span>streaming</span><span>performance</span><span>architecture</span></div>
+  </div>
+</article>
+
+<footer class="foot">
+  <div class="wrap">
+    © 2026 Mohsen Salari · <a href="https://github.com/mohsensalare">GitHub</a>
+  </div>
+</footer>
+
+<script src="../assets/js/main.js"></script>
+</body>
+</html>

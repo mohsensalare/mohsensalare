@@ -1,0 +1,183 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>What Is Actually Slowing Your Database Down? — Mohsen Salari</title>
+<meta name="description" content="A tour of database internals — the ACID tax, Redis's single-threaded design, B-Trees vs LSM Trees, compaction and Bloom filters, and specialized indexes — so you can fix a bottleneck instead of moving it." />
+<meta name="author" content="Mohsen Salari" />
+<meta name="theme-color" content="#0a0a0b" />
+<link rel="canonical" href="https://mohsensalare.ir/blog/why-your-database-is-choking.html" />
+
+<meta property="og:type" content="article" />
+<meta property="og:site_name" content="Mohsen Salari" />
+<meta property="og:url" content="https://mohsensalare.ir/blog/why-your-database-is-choking.html" />
+<meta property="og:title" content="What Is Actually Slowing Your Database Down?" />
+<meta property="og:description" content="ACID, Redis internals, B-Trees vs LSM Trees, compaction, Bloom filters, and specialized indexes — the trade-offs behind database performance." />
+<meta property="og:image" content="https://mohsensalare.ir/assets/img/blog/db-btree-vs-lsm.jpg" />
+<meta property="article:published_time" content="2026-06-19" />
+<meta property="article:author" content="Mohsen Salari" />
+
+<meta name="twitter:card" content="summary_large_image" />
+<meta name="twitter:title" content="What Is Actually Slowing Your Database Down?" />
+<meta name="twitter:description" content="ACID, Redis internals, B-Trees vs LSM Trees, compaction, Bloom filters, and specialized indexes — the trade-offs behind database performance." />
+<meta name="twitter:image" content="https://mohsensalare.ir/assets/img/blog/db-btree-vs-lsm.jpg" />
+
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@300;400;500&amp;family=Manrope:wght@400;500;600;700&amp;display=swap" rel="stylesheet" />
+
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='20' fill='%230a0a0b'/><text x='50' y='70' font-size='60' font-family='Helvetica,Arial' font-weight='500' fill='%23ededee' text-anchor='middle'>M</text></svg>" />
+<link rel="stylesheet" href="../assets/css/style.css" />
+
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "BlogPosting",
+  "headline": "What is actually slowing your database down?",
+  "description": "ACID, Redis internals, B-Trees vs LSM Trees, compaction, Bloom filters, and specialized indexes — the trade-offs behind database performance.",
+  "image": "https://mohsensalare.ir/assets/img/blog/db-btree-vs-lsm.jpg",
+  "datePublished": "2026-06-19",
+  "dateModified": "2026-06-19",
+  "author": { "@type": "Person", "name": "Mohsen Salari", "url": "https://mohsensalare.ir/" },
+  "publisher": { "@type": "Person", "name": "Mohsen Salari" },
+  "mainEntityOfPage": "https://mohsensalare.ir/blog/why-your-database-is-choking.html",
+  "keywords": "databases, system design, B-tree, LSM tree, PostgreSQL, Redis, performance"
+}
+</script>
+</head>
+<body>
+
+<header class="nav">
+  <div class="wrap nav-inner">
+    <a href="../index.html" class="brand"><span class="sig">MS</span> Mohsen Salari</a>
+    <nav class="nav-links" id="navlinks">
+      <a href="../index.html#work">Work</a>
+      <a href="../index.html#projects">Projects</a>
+      <a href="index.html">Writing</a>
+      <a href="../index.html#about">About</a>
+      <a href="../index.html#contact">Contact</a>
+    </nav>
+    <div class="nav-actions">
+      <button class="theme-toggle" id="themeBtn" aria-label="Toggle theme">☾</button>
+      <button class="nav-toggle" id="navToggle" aria-label="Open menu" aria-expanded="false">Menu</button>
+    </div>
+  </div>
+</header>
+
+<article class="post">
+  <a class="back" href="index.html">← All posts</a>
+
+  <header class="post-head">
+    <div class="meta"><span>2026-06-19</span><span>·</span><span>11 min read</span><span>·</span><span>system design</span></div>
+    <h1>What is actually slowing your database down?</h1>
+    <p class="sub">Before replacing a database, it helps to know which trade-off is hurting you. This is a practical look at the structures underneath the systems we use every day.</p>
+  </header>
+
+  <div class="post-body">
+    <p>A slow database rarely announces one clean cause. Maybe p95 climbed after the working set stopped fitting in memory. Maybe writes are waiting on locks. Maybe an index that worked for ten thousand rows is now doing far too much work.</p>
+
+    <p>At that point, moving to a different database can feel easier than diagnosing the current one. Sometimes it is the right call. Often it just exchanges one set of constraints for another. The useful question is more specific: <strong>which data structure or guarantee is costing us time?</strong></p>
+
+    <hr />
+
+    <h2>1. The heavy friction of safety: the ACID tax</h2>
+    <p>Before a database can be fast, it must be reliable. We demand it never lose our data, even if someone pulls the power plug mid-query. That safety net is <strong>ACID</strong> (Atomicity, Consistency, Isolation, Durability), and enforcing it is the main reason databases are historically slow.</p>
+    <p>Picture a banking app moving $100 from Alice to Bob — two operations: subtract from Alice, add to Bob.</p>
+    <ul>
+      <li><strong>Atomicity</strong> makes it all-or-nothing. If the system fails midway, logs roll back the partial changes.</li>
+      <li><strong>Durability</strong> guarantees a committed transaction is permanent — achieved via <strong>Write-Ahead Logging (WAL)</strong>, writing changes sequentially to a disk log <em>before</em> confirming the commit.</li>
+    </ul>
+    <p>But the real execution cost is <strong>Isolation</strong>. When thousands of users transfer money at once, how do you stop them overwriting each other? The strictest level, <strong>Serializable</strong>, forces transactions into a single-file line as if each owned the whole database. Because that destroys throughput, databases offer weaker levels (<em>Read Committed</em>, <em>Repeatable Read</em>) — faster, but they open the door to concurrency anomalies:</p>
+    <ul>
+      <li><strong>Dirty reads</strong> — B reads a value A wrote but hasn't committed; A rolls back, and B has processed data that never existed.</li>
+      <li><strong>Non-repeatable reads</strong> — A reads a row ($100), B updates and commits it ($80), A reads again in the same session and sees a different value.</li>
+      <li><strong>Phantom reads</strong> — A queries all transfers under $100; B inserts a new $50 record and commits; A reruns the query and new "phantom" rows appear.</li>
+    </ul>
+    <p><strong>Takeaway:</strong> traditional databases are structurally bound by the locks, concurrency checks, and synchronous disk logging required to keep your data safe.</p>
+
+    <h2>2. Bypassing the disk: the single-threaded magic of Redis</h2>
+    <p>If writing to disk and managing locks is the bottleneck, what if we remove the disk entirely? That's <strong>Redis</strong> — an in-memory database orders of magnitude faster than on-disk counterparts. But its speed isn't only RAM; it's a counterintuitive choice: <strong>Redis is primarily single-threaded.</strong></p>
+    <p>Why would a high-performance database use one core? Think of multi-threading as a kitchen with 20 chefs — to stop them colliding (race conditions) or grabbing the same pan, you need locks. Under high concurrency, threads burn cycles waiting on locks (contention) and switching context. With one thread, Redis has no locks, no race conditions, no context switching. So how does one thread serve 100,000 concurrent requests without blocking?</p>
+    <ul>
+      <li><strong>I/O multiplexing (epoll).</strong> Instead of a thread per connection, Redis uses OS calls like <code>epoll</code> to monitor tens of thousands of sockets in <code>O(1)</code>. When a socket has data ready, it fires an event, the single thread handles it instantly and moves on.</li>
+      <li><strong>RAM-native data structures.</strong> Freed from formatting data for disk blocks, Redis uses lean structures — e.g. <strong>skip lists</strong> (a probabilistic, layered linked list) for Sorted Sets, giving <code>O(log n)</code> lookups and range queries without the overhead of rebalancing a physical tree.</li>
+    </ul>
+
+    <h2>3. The great disk divide: B-Trees vs LSM Trees</h2>
+    <p>Eventually your data outgrows RAM (or your wallet outgrows the cost of keeping terabytes in memory) and you must write to disk. <em>How</em> a database lays data out on disk decides whether it's optimized for reads or writes. This is the fork in the road.</p>
+
+    <h3>The read-optimized standard: the B-Tree (relational)</h3>
+    <p>PostgreSQL, MySQL, and Oracle rely on the <strong>B-Tree</strong> (and its B+ Tree variant) — think of a massive, perfectly balanced filing cabinet. Data lives in fixed-size pages; internal nodes hold routing keys, leaves hold the data. Because the tree stays balanced, finding a record takes a small, predictable number of page lookups.</p>
+    <p><strong>The flaw:</strong> a firehose of writes (millions of IoT logs, app clicks) is brutal. To insert, the DB must find the right page, load it, modify it, write it back — and split it when it fills. That's heavy <strong>random I/O</strong>, the disk head jumping everywhere. Under write-heavy load, B-Trees choke.</p>
+
+    <h3>The write-optimized challenger: the LSM Tree (NoSQL)</h3>
+    <p>To kill the write bottleneck, systems like Cassandra, RocksDB, and LevelDB adopted the <strong>Log-Structured Merge-Tree (LSM Tree)</strong>. It <em>never</em> updates in place — it treats the disk as an append-only log.</p>
+    <ul>
+      <li><strong>Mechanism.</strong> A write goes immediately to a sequential log (durability) and into an in-memory balanced tree, the <strong>MemTable</strong>.</li>
+      <li><strong>SSTable flush.</strong> When the MemTable hits a threshold (say 64MB), it's flushed to disk as an immutable <strong>SSTable (Sorted String Table)</strong>. Since the data was already sorted in memory, the write is one continuous <strong>sequential I/O</strong> — fast on any media.</li>
+      <li><strong>The deletion quirk.</strong> SSTables are immutable, so you can't delete in place. Deleting a user writes a <strong>tombstone</strong> marker to the newest SSTable — so, counterintuitively, deleting data initially takes <em>more</em> space.</li>
+    </ul>
+
+    <figure>
+      <img src="../assets/img/blog/db-btree-vs-lsm.jpg" alt="B-Tree in-place random writes (slow) versus LSM Tree MemTable, immutable SSTables and sequential writes (fast)" />
+      <figcaption>Left: B-Tree in-place updates → random I/O, the choke point. Right: the LSM path — buffer in the MemTable, flush immutable SSTables sequentially, with Bloom filters and compaction making reads fast.</figcaption>
+    </figure>
+
+    <h2>4. Taming LSM reads: compaction and Bloom filters</h2>
+    <p>LSM Trees conquer writes but create a read problem: if a record was updated five times in an hour, it's now scattered across five SSTables. A single read may have to scan many files. Two background optimizations fix this.</p>
+
+    <h3>Background compaction</h3>
+    <p>An asynchronous process constantly tidies up: it reads multiple sorted SSTables sequentially, merges them (much like the merge phase of <strong>merge sort</strong>), keeps only the newest values, and discards stale data and tombstoned keys.</p>
+    <ul>
+      <li><strong>Size-tiered compaction</strong> merges SSTables of similar sizes — tuned for write-heavy workloads.</li>
+      <li><strong>Leveled compaction</strong> splits storage into exponentially larger levels (<code>L1, L2, L3…</code>), sharply limiting how many SSTables a read must check — tuned for reads, at the cost of more background I/O.</li>
+    </ul>
+
+    <figure>
+      <img src="../assets/img/blog/db-algorithm-complexity.png" alt="O(N squared) simple sorting versus O(N log N) efficient sorting — as data grows, better algorithms win" />
+      <figcaption>Why compaction leans on merge-style algorithms: at small N the constant factors barely matter, but as data grows, an <code>O(N log N)</code> merge crushes an <code>O(N²)</code> approach. The structure you pick is an algorithmic bet.</figcaption>
+    </figure>
+
+    <h3>Bloom filters</h3>
+    <p>To avoid reading disk blocks for keys that don't exist, every LSM level keeps a <strong>Bloom filter</strong> in memory — a space-efficient probabilistic structure. Ask it whether a key is in an SSTable and you get one of two answers:</p>
+    <ul>
+      <li><strong>"Firm no"</strong> — the key is definitely not here; skip the disk read entirely, saving random I/O.</li>
+      <li><strong>"Probably yes"</strong> — it might be here; go read the file.</li>
+    </ul>
+
+    <h2>5. The specialists: indexes for non-standard queries</h2>
+    <p>Once you see a database as a wrapper around data structures, it's clear some problems can't be solved by B-Trees or LSM Trees alone:</p>
+    <ul>
+      <li><strong>Inverted index (search engines).</strong> To full-text search millions of documents (Elasticsearch), a normal index fails. An inverted index maps each word to the list of document IDs containing it — turning the data upside down for millisecond search.</li>
+      <li><strong>Suffix tree (pattern matching).</strong> Finds every occurrence of a complex string pattern across a huge corpus almost instantly.</li>
+      <li><strong>R-Tree (spatial data).</strong> "Find all drivers within a 3-mile box of me" defeats a B-Tree because coordinates are two-dimensional. An R-Tree indexes by nested geometric boundaries, making spatial queries efficient.</li>
+    </ul>
+
+    <h2>Choose the constraint you can live with</h2>
+    <p>A migration can solve a real problem, but “horizontal scalability” always comes with constraints—often weaker transactions or fewer ways to model and query the data. Before changing systems, write down the bottleneck you can measure and ask:</p>
+    <ul>
+      <li>Can a cache (Redis) in front buy you months of runway?</li>
+      <li>Can a read replica offload the heavy queries?</li>
+      <li>Relational and transaction-heavy? Tune your B-Tree.</li>
+      <li>Ingesting a relentless firehose of time-series logs? Embrace the LSM Tree.</li>
+    </ul>
+    <p>There is no best database in isolation. There is only a workload, a set of guarantees, and a collection of constraints the team can operate. Start there.</p>
+
+    <div class="post-source">
+      Written up from my notes on database internals. Diagrams are my own.
+    </div>
+
+    <div class="post-tags"><span>databases</span><span>system design</span><span>postgresql</span><span>lsm tree</span><span>performance</span></div>
+  </div>
+</article>
+
+<footer class="foot">
+  <div class="wrap">
+    © 2026 Mohsen Salari · <a href="https://github.com/mohsensalare">GitHub</a>
+  </div>
+</footer>
+
+<script src="../assets/js/main.js"></script>
+</body>
+</html>

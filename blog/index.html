@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Writing — Mohsen Salari</title>
+<meta name="description" content="Notes on backend engineering, distributed systems, and putting AI into production — by Mohsen Salari." />
+<meta name="author" content="Mohsen Salari" />
+<meta name="theme-color" content="#0a0a0b" />
+<link rel="canonical" href="https://mohsensalare.ir/blog/" />
+<meta property="og:type" content="website" />
+<meta property="og:site_name" content="Mohsen Salari" />
+<meta property="og:url" content="https://mohsensalare.ir/blog/" />
+<meta property="og:title" content="Writing — Mohsen Salari" />
+<meta property="og:description" content="Notes on backend engineering, distributed systems, and putting AI into production." />
+<meta property="og:image" content="https://mohsensalare.ir/assets/img/mohsen.jpg" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@300;400;500&amp;family=Manrope:wght@400;500;600;700&amp;display=swap" rel="stylesheet" />
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='20' fill='%230a0a0b'/><text x='50' y='70' font-size='60' font-family='Helvetica,Arial' font-weight='500' fill='%23ededee' text-anchor='middle'>M</text></svg>" />
+<link rel="stylesheet" href="../assets/css/style.css" />
+</head>
+<body>
+
+<header class="nav">
+  <div class="wrap nav-inner">
+    <a href="../index.html" class="brand"><span class="sig">MS</span> Mohsen&nbsp;Salari</a>
+    <nav class="nav-links" id="navlinks">
+      <a href="../index.html#work">Work</a>
+      <a href="../index.html#projects">Projects</a>
+      <a href="index.html">Writing</a>
+      <a href="../index.html#about">About</a>
+      <a href="../index.html#contact">Contact</a>
+    </nav>
+    <div class="nav-actions">
+      <button class="theme-toggle" id="themeBtn" aria-label="Toggle theme">☾</button>
+      <button class="nav-toggle" id="navToggle" aria-label="Open menu" aria-expanded="false">Menu</button>
+    </div>
+  </div>
+</header>
+
+<div class="blog-index">
+  <span class="eyebrow">Writing</span>
+  <h1 class="section-title">Notes I wish I’d had earlier.</h1>
+  <p class="lead">I write when I’ve had to understand something well enough to explain it without the usual fog—mostly databases, distributed systems, and production performance.</p>
+
+  <div class="posts">
+    <a class="post-row" href="why-your-database-is-choking.html">
+      <span class="date">11 min read</span>
+      <h3>What is actually slowing your database down?</h3>
+      <span class="arrow">→</span>
+      <p class="excerpt">A practical tour of ACID costs, B-Trees, LSM Trees, compaction, and Bloom filters—and the trade-offs behind each one.</p>
+      <span class="ptags"><span>databases</span><span>system design</span></span>
+    </a>
+    <a class="post-row" href="why-kafka-is-fast.html">
+      <span class="date">8 min read</span>
+      <h3>Kafka is fast for surprisingly ordinary reasons</h3>
+      <span class="arrow">→</span>
+      <p class="excerpt">Sequential I/O, the page cache, and zero-copy explain most of the story. Here is how they fit together.</p>
+      <span class="ptags"><span>Kafka</span><span>performance</span></span>
+    </a>
+  </div>
+</div>
+
+<footer class="foot">
+  <div class="wrap">
+    © 2026 Mohsen Salari · <a href="https://github.com/mohsensalare">GitHub</a>
+  </div>
+</footer>
+
+<script src="../assets/js/main.js"></script>
+</body>
+</html>

@@ -1,0 +1,5 @@
+User-agent: *
+Allow: /
+Disallow: /blog/_unused/
+
+Sitemap: https://mohsensalare.ir/sitemap.xml
